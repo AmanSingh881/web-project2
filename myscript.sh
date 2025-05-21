@@ -5,5 +5,5 @@ IMAGE_TAG="__DYNAMIC_VAR__"
 VAR3="static-value-3"
 
 echo "VAR1: $VAR1"
-echo "VAR2: $VAR2"
+echo "VAR2: $IMAGE_TAG"
 echo "VAR3: $VAR3"
