@@ -1,7 +1,7 @@
 #!/bin/bash
 
 VAR1="static-value-1"
-VAR2="__DYNAMIC_VAR__"
+IMAGE_TAG="__DYNAMIC_VAR__"
 VAR3="static-value-3"
 
 echo "VAR1: $VAR1"
