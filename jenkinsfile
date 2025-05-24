@@ -1,0 +1,153 @@
+pipeline {
+  agent any
+
+  parameters {
+    string(name: 'DEPLOY_VERSION', defaultValue: '', description: 'Enter the version to deploy (used in userdata script)')
+  }
+
+  environment {
+    IMAGE_TAG="${params.DEPLOY_VERSION}"
+        
+    FRONTEND_IMAGE_REPO_NAME=credentials("frontendImageRepoName")
+    BACKEND_IMAGE_REPO_NAME=credentials("backendImageRepoName")
+    
+    AWS_DEFAULT_REGION=credentials("awsDefaultRegion")
+
+    AWS_ACCOUNT_ID=credentials('awsAccountId')
+
+    
+    BACKEND_REPOSITORY_URI=credentials("backendECRuri")
+    FRONTEND_REPOSITORY_URI=credentials("frontendECRuri")
+    
+    LAUNCH_TEMPLATE_ID = 'lt-04c04c37a3416aa89'
+    AWS_REGION = 'us-east-1'
+    SCRIPT_TEMPLATE = 'myscript.sh'
+    FINAL_SCRIPT = 'final_userdata.sh'
+    ASG_NAME = 'example-asg-2025052406570547380000000d'
+  }
+
+  stages {
+    stage('Build') {
+        steps {
+            git url: 'https://github.com/AmanSingh881/web-project2.git', branch: 'main'
+            sh "ls -lsah"
+        }
+    }
+    
+    stage('Docker Image') {
+          steps {
+            sh 'docker build -t ${FRONTEND_IMAGE_REPO_NAME}:${IMAGE_TAG} .'
+          }
+    }
+    
+    
+stage('Pushing to ECR') {
+  steps {  
+    script {
+      sh """
+        aws ecr get-login-password --region ${AWS_DEFAULT_REGION} \
+          | docker login \
+              --username AWS \
+              --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+      """
+
+      sh """
+        docker tag ${FRONTEND_IMAGE_REPO_NAME}:${IMAGE_TAG} ${FRONTEND_REPOSITORY_URI}:${IMAGE_TAG}
+      """
+
+      sh """
+        docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${FRONTEND_IMAGE_REPO_NAME}:${IMAGE_TAG}
+      """
+    }
+  }
+}
+
+      
+    stage('Prepare Final UserData Script') {
+      steps {
+        script {
+          // Replace version placeholder and save to new file
+          sh """
+          sed 's/__VERSION__/${params.DEPLOY_VERSION}/g' $SCRIPT_TEMPLATE > $FINAL_SCRIPT
+          chmod +x $FINAL_SCRIPT
+          """
+        }
+      }
+    }
+
+    stage('Encode UserData') {
+      steps {
+        script {
+          // Base64 encode the final script
+          def encodedUserData = sh(script: "base64 -w 0 ${env.FINAL_SCRIPT}", returnStdout: true).trim()
+          env.ENCODED_USER_DATA = encodedUserData
+        }
+      }
+    }
+
+    stage('Create New Launch Template Version') {
+      steps {
+        script {
+          sh """
+          aws ec2 create-launch-template-version \
+            --launch-template-id $LAUNCH_TEMPLATE_ID \
+            --source-version 1 \
+            --launch-template-data '{
+              "UserData": "${ENCODED_USER_DATA}"
+            }' \
+            --region $AWS_REGION
+          """
+          
+          sh '''echo 'hello world' '''
+        }
+      }
+    }
+    
+
+
+
+
+    stage('Get Latest Launch Template Version') {
+            steps {
+                script {
+                    echo "Fetching latest launch template version..."
+
+                    // Get the latest version number from AWS CLI
+                    def latestVersion = sh(
+                        script: """
+                            aws ec2 describe-launch-template-versions \
+                              --launch-template-id ${LAUNCH_TEMPLATE_ID} \
+                              --versions '\$Latest' \
+                              --query 'LaunchTemplateVersions[0].VersionNumber' \
+                              --region ${AWS_REGION} \
+                              --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Latest Launch Template Version: ${latestVersion}"
+
+                    // Save it to env variable for use in next stage
+                    env.LATEST_VERSION = latestVersion
+                }
+            }
+        }
+
+        stage('Start ASG Instance Refresh') {
+            steps {
+                script {
+                    echo "Triggering Instance Refresh with Launch Template Version ${env.LATEST_VERSION}..."
+
+                    sh """
+                        aws autoscaling start-instance-refresh \
+                          --auto-scaling-group-name ${ASG_NAME} \
+                          --strategy Rolling \
+                          --preferences '{"MinHealthyPercentage":90,"InstanceWarmup":300}' \
+                          --desired-configuration "LaunchTemplate={LaunchTemplateId=${LAUNCH_TEMPLATE_ID},Version=${env.LATEST_VERSION}}" \
+                          --region ${AWS_REGION}
+                    """
+                }
+            }
+        }
+    }
+}
